@@ -1,0 +1,10 @@
+# Nuwa Camera Streaming - Python Requirements
+# Generated from conda environment: nuwa
+# For use with: pip install -r requirements.txt
+
+# Core packages
+numpy==1.24.4
+opencv-python==4.2.0.*
+
+# Note: For full compatibility, use the conda environment.yml file instead
+# This requirements.txt is provided for pip-only installations if needed

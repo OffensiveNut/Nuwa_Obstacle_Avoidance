@@ -248,3 +248,17 @@ pyrightconfig.json
 
 # End of https://www.toptal.com/developers/gitignore/api/cmake,c++,python,visualstudiocode
 __pycache__/
+
+# Camera data output files
+*.yuv
+*.pcd
+*.jpg
+*.png
+*.bmp
+
+# Conda environment (if created locally)
+# Note: environment.yml should be committed for reproducibility
+.conda/
+
+# Log files
+*.log
