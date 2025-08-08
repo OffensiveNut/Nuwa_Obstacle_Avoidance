@@ -211,9 +211,38 @@ def main():
             
             # Display depth image
             if depth_img is not None:
-                # Normalize depth for visualization
-                depth_norm = cv2.normalize(depth_img, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-                depth_colored = cv2.applyColorMap(depth_norm, cv2.COLORMAP_JET)
+                # Create mask for valid depth values (exclude 0 and very high values)
+                # Typical depth camera range is 0.3m to 10m, so values close to 0 or max uint16 are invalid
+                valid_mask = (depth_img > 100) & (depth_img < 60000)  # Adjust thresholds as needed
+                
+                # Create output image
+                depth_colored = np.zeros((depth_img.shape[0], depth_img.shape[1], 3), dtype=np.uint8)
+                
+                if np.any(valid_mask):
+                    # Process only valid depth values
+                    valid_depth = depth_img[valid_mask]
+                    
+                    # Normalize only the valid range for better contrast
+                    min_valid = np.min(valid_depth)
+                    max_valid = np.max(valid_depth)
+                    
+                    # Create normalized depth image
+                    depth_processed = np.zeros_like(depth_img, dtype=np.float32)
+                    depth_processed[valid_mask] = (depth_img[valid_mask] - min_valid) / (max_valid - min_valid)
+                    
+                    # Convert to 8-bit and invert (closer = higher values = red)
+                    depth_norm = (depth_processed * 255).astype(np.uint8)
+                    depth_inverted = 255 - depth_norm
+                    
+                    # Apply colormap
+                    depth_colored = cv2.applyColorMap(depth_inverted, cv2.COLORMAP_JET)
+                    
+                    # Set invalid areas to deep blue/black
+                    depth_colored[~valid_mask] = [30, 0, 0]  # Deep blue in BGR format
+                else:
+                    # If no valid depth data, make everything deep blue/black
+                    depth_colored[:, :] = [30, 0, 0]  # Deep blue in BGR
+                
                 cv2.imshow('Live Depth Stream', depth_colored)
             
             # Display RGB image
@@ -229,6 +258,25 @@ def main():
             elif key == ord('s'):
                 # Save current frames
                 if depth_img is not None:
+                    # Apply the same depth processing as in display
+                    valid_mask = (depth_img > 100) & (depth_img < 60000)
+                    depth_colored = np.zeros((depth_img.shape[0], depth_img.shape[1], 3), dtype=np.uint8)
+                    
+                    if np.any(valid_mask):
+                        valid_depth = depth_img[valid_mask]
+                        min_valid = np.min(valid_depth)
+                        max_valid = np.max(valid_depth)
+                        
+                        depth_processed = np.zeros_like(depth_img, dtype=np.float32)
+                        depth_processed[valid_mask] = (depth_img[valid_mask] - min_valid) / (max_valid - min_valid)
+                        
+                        depth_norm = (depth_processed * 255).astype(np.uint8)
+                        depth_inverted = 255 - depth_norm
+                        depth_colored = cv2.applyColorMap(depth_inverted, cv2.COLORMAP_JET)
+                        depth_colored[~valid_mask] = [30, 0, 0]  # Deep blue for invalid areas
+                    else:
+                        depth_colored[:, :] = [30, 0, 0]  # Deep blue
+                    
                     cv2.imwrite(f"live_depth_{save_counter:04d}.png", depth_colored)
                 if rgb_img is not None:
                     cv2.imwrite(f"live_rgb_{save_counter:04d}.png", rgb_img)
