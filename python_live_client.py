@@ -12,6 +12,56 @@ import time
 import threading
 from typing import Optional, Tuple
 
+def analyze_danger_zones(depth_img: np.ndarray) -> Tuple[Tuple[str, float], Tuple[str, float], Tuple[str, float]]:
+    """
+    Analyze depth image for 3-zone danger detection (Left, Center, Right)
+    
+    Args:
+        depth_img: 16-bit depth image
+        
+    Returns:
+        Tuple of ((left_status, left_min_dist), (center_status, center_min_dist), (right_status, right_min_dist))
+        Each status is either "safe" or "warn", distances in meters
+    """
+    if depth_img is None:
+        return ("safe", 0.0), ("safe", 0.0), ("safe", 0.0)
+    
+    height, width = depth_img.shape
+    
+    # Define zones (30% left, 40% center, 30% right)
+    left_end = int(width * 0.3)
+    center_end = int(width * 0.7)
+    
+    left_zone = depth_img[:, :left_end]
+    center_zone = depth_img[:, left_end:center_end]
+    right_zone = depth_img[:, center_end:]
+    
+    # Define danger thresholds (in depth units, assuming ~1mm per unit)
+    CENTER_THRESHOLD = 1500   # 1.5 meters for center zone
+    SIDE_THRESHOLD = 1000     # 1.0 meters for left/right zones
+    
+    def check_zone_danger(zone: np.ndarray, threshold: int) -> Tuple[str, float]:
+        """Check if any valid depth in zone is below threshold, return status and min distance"""
+        # Filter valid depth values (exclude 0 and very high values)
+        valid_mask = (zone > 100) & (zone < 60000)
+        
+        if not np.any(valid_mask):
+            return "safe", 0.0  # No valid data, assume safe
+        
+        valid_depths = zone[valid_mask]
+        min_distance = np.min(valid_depths)
+        min_distance_m = min_distance / 1000.0  # Convert to meters
+        
+        status = "warn" if min_distance < threshold else "safe"
+        return status, min_distance_m
+    
+    # Analyze each zone
+    left_result = check_zone_danger(left_zone, SIDE_THRESHOLD)
+    center_result = check_zone_danger(center_zone, CENTER_THRESHOLD)
+    right_result = check_zone_danger(right_zone, SIDE_THRESHOLD)
+    
+    return left_result, center_result, right_result
+
 class CameraStreamClient:
     def __init__(self, host='localhost', port=8888):
         self.host = host
@@ -202,12 +252,25 @@ def main():
         
         print("\nLive camera stream viewer started")
         print("Press 'q' to quit, 's' to save frames")
+        print("\n3-Zone Danger Detection Active:")
+        print("  Format: LEFT(distance) | CENTER(distance) | RIGHT(distance)")
+        print("  Zone Layout: [30%] [40%] [30%]")
+        print("  Thresholds: Left/Right < 1.0m, Center < 1.5m")
+        print("  Status: 'safe' or 'warn' + closest distance in meters")
+        print("  Visual: Distance overlay shown on depth video feed\n")
         
         save_counter = 0
         
         while True:
             # Get latest frames
             depth_img, rgb_img, ir_img = client.get_latest_frames()
+            
+            # Perform 3-zone danger detection
+            if depth_img is not None:
+                (left_status, left_dist), (center_status, center_dist), (right_status, right_dist) = analyze_danger_zones(depth_img)
+                
+                # Print concise warning line for each frame with distances
+                print(f"\r{left_status}({left_dist:.2f}m) | {center_status}({center_dist:.2f}m) | {right_status}({right_dist:.2f}m)", end="", flush=True)
             
             # Display depth image
             if depth_img is not None:
@@ -239,6 +302,39 @@ def main():
                     
                     # Set invalid areas to deep blue/black
                     depth_colored[~valid_mask] = [30, 0, 0]  # Deep blue in BGR format
+                    
+                    # Draw zone boundaries and status indicators
+                    height, width = depth_colored.shape[:2]
+                    
+                    # Define zone boundaries (30% left, 40% center, 30% right)
+                    left_end = int(width * 0.3)
+                    center_end = int(width * 0.7)
+                    
+                    # Draw vertical lines to separate zones
+                    cv2.line(depth_colored, (left_end, 0), (left_end, height), (255, 255, 255), 2)
+                    cv2.line(depth_colored, (center_end, 0), (center_end, height), (255, 255, 255), 2)
+                    
+                    # Add zone labels and status colors
+                    if 'left_status' in locals() and 'center_status' in locals() and 'right_status' in locals() and 'left_dist' in locals():
+                        # Color coding: Green for safe, Red for warn
+                        left_color = (0, 0, 255) if left_status == "warn" else (0, 255, 0)    # BGR format
+                        center_color = (0, 0, 255) if center_status == "warn" else (0, 255, 0)
+                        right_color = (0, 0, 255) if right_status == "warn" else (0, 255, 0)
+                        
+                        # Add colored rectangles at top to show zone status
+                        cv2.rectangle(depth_colored, (5, 5), (left_end - 5, 45), left_color, -1)
+                        cv2.rectangle(depth_colored, (left_end + 5, 5), (center_end - 5, 45), center_color, -1)
+                        cv2.rectangle(depth_colored, (center_end + 5, 5), (width - 5, 45), right_color, -1)
+                        
+                        # Add text labels with distances
+                        cv2.putText(depth_colored, "LEFT", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                        cv2.putText(depth_colored, f"{left_dist:.2f}m", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                        
+                        cv2.putText(depth_colored, "CENTER", (left_end + 10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                        cv2.putText(depth_colored, f"{center_dist:.2f}m", (left_end + 10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                        
+                        cv2.putText(depth_colored, "RIGHT", (center_end + 10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                        cv2.putText(depth_colored, f"{right_dist:.2f}m", (center_end + 10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
                 else:
                     # If no valid depth data, make everything deep blue/black
                     depth_colored[:, :] = [30, 0, 0]  # Deep blue in BGR
