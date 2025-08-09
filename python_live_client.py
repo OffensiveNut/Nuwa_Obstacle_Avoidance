@@ -10,21 +10,100 @@ import numpy as np
 import cv2
 import time
 import threading
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
+from collections import deque
 
-def analyze_danger_zones(depth_img: np.ndarray) -> Tuple[Tuple[str, float], Tuple[str, float], Tuple[str, float]]:
+class TTCCalculator:
+    """Time-to-Collision calculator for tracking object approach velocity"""
+    
+    def __init__(self, history_size: int = 10, min_velocity_threshold: float = 0.01):
+        """
+        Initialize TTC calculator
+        
+        Args:
+            history_size: Number of distance measurements to keep for velocity calculation
+            min_velocity_threshold: Minimum velocity (m/s) to consider for TTC calculation
+        """
+        self.history_size = history_size
+        self.min_velocity_threshold = min_velocity_threshold
+        
+        # Store distance history for each zone: [left, center, right]
+        self.distance_history = [deque(maxlen=history_size) for _ in range(3)]
+        self.time_history = [deque(maxlen=history_size) for _ in range(3)]
+        
+    def update_and_calculate_ttc(self, distances: List[float]) -> List[Optional[float]]:
+        """
+        Update distance history and calculate TTC for each zone
+        
+        Args:
+            distances: List of [left_dist, center_dist, right_dist] in meters
+            
+        Returns:
+            List of TTC values in seconds [left_ttc, center_ttc, right_ttc]
+            None if TTC cannot be calculated (no approach velocity)
+        """
+        current_time = time.time()
+        ttc_values = []
+        
+        for zone_idx, distance in enumerate(distances):
+            # Add current measurement
+            self.distance_history[zone_idx].append(distance)
+            self.time_history[zone_idx].append(current_time)
+            
+            # Calculate TTC if we have enough history
+            if len(self.distance_history[zone_idx]) >= 3:
+                ttc = self._calculate_zone_ttc(zone_idx)
+                ttc_values.append(ttc)
+            else:
+                ttc_values.append(None)  # Not enough data yet
+                
+        return ttc_values
+    
+    def _calculate_zone_ttc(self, zone_idx: int) -> Optional[float]:
+        """Calculate TTC for a specific zone using linear regression on recent data"""
+        distances = list(self.distance_history[zone_idx])
+        times = list(self.time_history[zone_idx])
+        
+        if len(distances) < 3:
+            return None
+            
+        # Use linear regression to estimate velocity (distance change over time)
+        # Convert to numpy arrays for calculation
+        time_diff = np.array(times) - times[0]  # Relative time
+        dist_array = np.array(distances)
+        
+        # Calculate velocity using simple linear regression
+        if len(time_diff) > 1 and time_diff[-1] > time_diff[0]:
+            # Velocity = slope of distance vs time (negative means approaching)
+            velocity = (dist_array[-1] - dist_array[0]) / (time_diff[-1] - time_diff[0])
+            
+            # Only calculate TTC for approaching objects (negative velocity)
+            if velocity < -self.min_velocity_threshold:
+                current_distance = distances[-1]
+                ttc = current_distance / abs(velocity)  # Time to reach distance = 0
+                
+                # Clamp TTC to reasonable range (0.1 to 60 seconds)
+                if 0.1 <= ttc <= 60.0:
+                    return ttc
+                    
+        return None  # No collision risk or unreliable data
+
+# Global TTC calculator instance
+ttc_calculator = TTCCalculator()
+
+def analyze_danger_zones(depth_img: np.ndarray) -> Tuple[Tuple[str, float, Optional[float]], Tuple[str, float, Optional[float]], Tuple[str, float, Optional[float]]]:
     """
-    Analyze depth image for 3-zone danger detection (Left, Center, Right)
+    Analyze depth image for 3-zone danger detection with Time-to-Collision calculation
     
     Args:
         depth_img: 16-bit depth image
         
     Returns:
-        Tuple of ((left_status, left_min_dist), (center_status, center_min_dist), (right_status, right_min_dist))
-        Each status is either "safe" or "warn", distances in meters
+        Tuple of ((left_status, left_min_dist, left_ttc), (center_status, center_min_dist, center_ttc), (right_status, right_min_dist, right_ttc))
+        Each status is either "safe" or "warn", distances in meters, TTC in seconds (None if no collision risk)
     """
     if depth_img is None:
-        return ("safe", 0.0), ("safe", 0.0), ("safe", 0.0)
+        return ("safe", 0.0, None), ("safe", 0.0, None), ("safe", 0.0, None)
     
     height, width = depth_img.shape
     
@@ -60,7 +139,16 @@ def analyze_danger_zones(depth_img: np.ndarray) -> Tuple[Tuple[str, float], Tupl
     center_result = check_zone_danger(center_zone, CENTER_THRESHOLD)
     right_result = check_zone_danger(right_zone, SIDE_THRESHOLD)
     
-    return left_result, center_result, right_result
+    # Calculate TTC for each zone
+    distances = [left_result[1], center_result[1], right_result[1]]
+    ttc_values = ttc_calculator.update_and_calculate_ttc(distances)
+    
+    # Combine results with TTC
+    left_final = (left_result[0], left_result[1], ttc_values[0])
+    center_final = (center_result[0], center_result[1], ttc_values[1])
+    right_final = (right_result[0], right_result[1], ttc_values[2])
+    
+    return left_final, center_final, right_final
 
 class CameraStreamClient:
     def __init__(self, host='localhost', port=8888):
@@ -252,12 +340,13 @@ def main():
         
         print("\nLive camera stream viewer started")
         print("Press 'q' to quit, 's' to save frames")
-        print("\n3-Zone Danger Detection Active:")
-        print("  Format: LEFT(distance) | CENTER(distance) | RIGHT(distance)")
+        print("\n3-Zone Danger Detection + Time-to-Collision (TTC) Active:")
+        print("  Format: LEFT(distance,TTC) | CENTER(distance,TTC) | RIGHT(distance,TTC)")
         print("  Zone Layout: [30%] [40%] [30%]")
         print("  Thresholds: Left/Right < 1.0m, Center < 1.5m")
-        print("  Status: 'safe' or 'warn' + closest distance in meters")
-        print("  Visual: Distance overlay shown on depth video feed\n")
+        print("  Status: 'safe' or 'warn' + distance + TTC")
+        print("  TTC Colors: Green=safe, Orange=TTC<5s, Red=immediate danger")
+        print("  Visual: Distance + TTC overlay shown on depth video feed\n")
         
         save_counter = 0
         
@@ -265,12 +354,24 @@ def main():
             # Get latest frames
             depth_img, rgb_img, ir_img = client.get_latest_frames()
             
-            # Perform 3-zone danger detection
+            # Perform 3-zone danger detection with TTC calculation
             if depth_img is not None:
-                (left_status, left_dist), (center_status, center_dist), (right_status, right_dist) = analyze_danger_zones(depth_img)
+                (left_status, left_dist, left_ttc), (center_status, center_dist, center_ttc), (right_status, right_dist, right_ttc) = analyze_danger_zones(depth_img)
                 
-                # Print concise warning line for each frame with distances
-                print(f"\r{left_status}({left_dist:.2f}m) | {center_status}({center_dist:.2f}m) | {right_status}({right_dist:.2f}m)", end="", flush=True)
+                # Format TTC display helper
+                def format_ttc(ttc):
+                    if ttc is None:
+                        return "---"
+                    elif ttc < 10:
+                        return f"{ttc:.1f}s"
+                    else:
+                        return f"{ttc:.0f}s"
+                
+                # Print concise warning line for each frame with distances and TTC
+                left_display = f"{left_status}({left_dist:.2f}m,{format_ttc(left_ttc)})"
+                center_display = f"{center_status}({center_dist:.2f}m,{format_ttc(center_ttc)})"
+                right_display = f"{right_status}({right_dist:.2f}m,{format_ttc(right_ttc)})"
+                print(f"\r{left_display} | {center_display} | {right_display}", end="", flush=True)
             
             # Display depth image
             if depth_img is not None:
@@ -315,26 +416,46 @@ def main():
                     cv2.line(depth_colored, (center_end, 0), (center_end, height), (255, 255, 255), 2)
                     
                     # Add zone labels and status colors
-                    if 'left_status' in locals() and 'center_status' in locals() and 'right_status' in locals() and 'left_dist' in locals():
-                        # Color coding: Green for safe, Red for warn
-                        left_color = (0, 0, 255) if left_status == "warn" else (0, 255, 0)    # BGR format
-                        center_color = (0, 0, 255) if center_status == "warn" else (0, 255, 0)
-                        right_color = (0, 0, 255) if right_status == "warn" else (0, 255, 0)
+                    if 'left_status' in locals() and 'center_status' in locals() and 'right_status' in locals() and 'left_dist' in locals() and 'left_ttc' in locals():
+                        # Color coding: Green for safe, Red for warn, Orange for TTC warning
+                        def get_zone_color(status, ttc):
+                            if status == "warn":
+                                return (0, 0, 255)  # Red for immediate danger
+                            elif ttc is not None and ttc < 5.0:
+                                return (0, 165, 255)  # Orange for TTC warning
+                            else:
+                                return (0, 255, 0)  # Green for safe
                         
-                        # Add colored rectangles at top to show zone status
-                        cv2.rectangle(depth_colored, (5, 5), (left_end - 5, 45), left_color, -1)
-                        cv2.rectangle(depth_colored, (left_end + 5, 5), (center_end - 5, 45), center_color, -1)
-                        cv2.rectangle(depth_colored, (center_end + 5, 5), (width - 5, 45), right_color, -1)
+                        left_color = get_zone_color(left_status, left_ttc)
+                        center_color = get_zone_color(center_status, center_ttc)
+                        right_color = get_zone_color(right_status, right_ttc)
                         
-                        # Add text labels with distances
+                        # Add colored rectangles at top to show zone status (taller for TTC info)
+                        cv2.rectangle(depth_colored, (5, 5), (left_end - 5, 65), left_color, -1)
+                        cv2.rectangle(depth_colored, (left_end + 5, 5), (center_end - 5, 65), center_color, -1)
+                        cv2.rectangle(depth_colored, (center_end + 5, 5), (width - 5, 65), right_color, -1)
+                        
+                        # Helper function to format TTC display
+                        def format_ttc_display(ttc):
+                            if ttc is None:
+                                return "TTC: ---"
+                            elif ttc < 10:
+                                return f"TTC: {ttc:.1f}s"
+                            else:
+                                return f"TTC: {ttc:.0f}s"
+                        
+                        # Add text labels with distances and TTC
                         cv2.putText(depth_colored, "LEFT", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
                         cv2.putText(depth_colored, f"{left_dist:.2f}m", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                        cv2.putText(depth_colored, format_ttc_display(left_ttc), (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
                         
                         cv2.putText(depth_colored, "CENTER", (left_end + 10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
                         cv2.putText(depth_colored, f"{center_dist:.2f}m", (left_end + 10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                        cv2.putText(depth_colored, format_ttc_display(center_ttc), (left_end + 10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
                         
                         cv2.putText(depth_colored, "RIGHT", (center_end + 10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
                         cv2.putText(depth_colored, f"{right_dist:.2f}m", (center_end + 10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                        cv2.putText(depth_colored, format_ttc_display(right_ttc), (center_end + 10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
                 else:
                     # If no valid depth data, make everything deep blue/black
                     depth_colored[:, :] = [30, 0, 0]  # Deep blue in BGR
