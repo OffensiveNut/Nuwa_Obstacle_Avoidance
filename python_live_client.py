@@ -10,8 +10,20 @@ import numpy as np
 import cv2
 import time
 import threading
+import os
 from typing import Optional, Tuple, List
 from collections import deque
+
+# TTS and Audio imports
+try:
+    from gtts import gTTS
+    import pygame
+    from pydub import AudioSegment
+    TTS_AVAILABLE = True
+except ImportError as e:
+    print(f"TTS packages not available: {e}")
+    print("Install with: pip install gtts pygame pydub")
+    TTS_AVAILABLE = False
 
 class TTCCalculator:
     """Time-to-Collision calculator for tracking object approach velocity"""
@@ -88,8 +100,123 @@ class TTCCalculator:
                     
         return None  # No collision risk or unreliable data
 
-# Global TTC calculator instance
+class TTSAudioManager:
+    """Text-to-Speech Audio Manager for TTC warnings"""
+    
+    def __init__(self, audio_dir: str = "audio_cache"):
+        """
+        Initialize TTS Audio Manager
+        
+        Args:
+            audio_dir: Directory to store cached audio files
+        """
+        self.audio_dir = audio_dir
+        self.audio_files = {}
+        self.last_warning_time = {}
+        self.warning_cooldown = 2.0  # Minimum seconds between same warning
+        
+        # Create audio directory
+        os.makedirs(self.audio_dir, exist_ok=True)
+        
+        # Initialize pygame mixer if available
+        if TTS_AVAILABLE:
+            try:
+                pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
+                self.audio_enabled = True
+                print("Audio system initialized")
+            except Exception as e:
+                print(f"Failed to initialize audio: {e}")
+                self.audio_enabled = False
+        else:
+            self.audio_enabled = False
+            
+        # Pre-generate Indonesian warning audio files
+        self._generate_warning_audio()
+    
+    def _generate_warning_audio(self):
+        """Generate and cache Indonesian TTS audio files"""
+        if not self.audio_enabled:
+            return
+            
+        warnings = {
+            "kanan": "Kanan!",      # Right!
+            "kiri": "Kiri!",        # Left!
+            "tengah": "Tengah!"     # Center!
+        }
+        
+        for key, text in warnings.items():
+            mp3_file = os.path.join(self.audio_dir, f"{key}.mp3")
+            
+            # Generate if doesn't exist
+            if not os.path.exists(mp3_file):
+                try:
+                    print(f"Generating TTS audio for: {text}")
+                    
+                    # Generate TTS with Indonesian language and save directly as MP3
+                    tts = gTTS(text=text, lang='id', slow=False)
+                    tts.save(mp3_file)
+                    
+                    print(f"Generated: {mp3_file}")
+                    
+                except Exception as e:
+                    print(f"Failed to generate audio for {key}: {e}")
+                    continue
+            
+            # Store file path
+            if os.path.exists(mp3_file):
+                self.audio_files[key] = mp3_file
+    
+    def play_warning_sequence(self, zones_under_threshold: List[str]):
+        """
+        Play sequential audio warnings for zones with TTC under threshold
+        
+        Args:
+            zones_under_threshold: List of zone names ["kanan", "kiri", "tengah"]
+                                 in order of priority (right -> left -> center)
+        """
+        if not self.audio_enabled or not zones_under_threshold:
+            return
+            
+        current_time = time.time()
+        
+        # Check cooldown for this specific combination
+        warning_key = "_".join(sorted(zones_under_threshold))
+        
+        if (warning_key in self.last_warning_time and 
+            current_time - self.last_warning_time[warning_key] < self.warning_cooldown):
+            return  # Still in cooldown
+        
+        # Update last warning time
+        self.last_warning_time[warning_key] = current_time
+        
+        # Play warnings sequentially in a separate thread to avoid blocking
+        thread = threading.Thread(target=self._play_sequence_thread, args=(zones_under_threshold,))
+        thread.daemon = True
+        thread.start()
+    
+    def _play_sequence_thread(self, zones: List[str]):
+        """Play audio sequence in separate thread"""
+        try:
+            for i, zone in enumerate(zones):
+                if zone in self.audio_files:
+                    # Load and play the audio file
+                    pygame.mixer.music.load(self.audio_files[zone])
+                    pygame.mixer.music.play()
+                    
+                    # Wait for audio to finish before playing next
+                    while pygame.mixer.music.get_busy():
+                        time.sleep(0.1)
+                    
+                    # Small gap between warnings
+                    if i < len(zones) - 1:
+                        time.sleep(0.2)
+                        
+        except Exception as e:
+            print(f"Error playing audio sequence: {e}")
+
+# Global TTC calculator and audio manager instances
 ttc_calculator = TTCCalculator()
+audio_manager = TTSAudioManager() if TTS_AVAILABLE else None
 
 def analyze_danger_zones(depth_img: np.ndarray) -> Tuple[Tuple[str, float, Optional[float]], Tuple[str, float, Optional[float]], Tuple[str, float, Optional[float]]]:
     """
@@ -346,7 +473,19 @@ def main():
         print("  Thresholds: Left/Right < 1.0m, Center < 1.5m")
         print("  Status: 'safe' or 'warn' + distance + TTC")
         print("  TTC Colors: Green=safe, Orange=TTC<5s, Red=immediate danger")
-        print("  Visual: Distance + TTC overlay shown on depth video feed\n")
+        print("  Visual: Distance + TTC overlay shown on depth video feed")
+        
+        if audio_manager and audio_manager.audio_enabled:
+            print("\nTTS Audio Warning System Active:")
+            print("  - Triggers when TTC ≤ 4 seconds")
+            print("  - Sequential warnings: 'Kanan!' (Right), 'Kiri!' (Left), 'Tengah!' (Center)")
+            print("  - Language: Indonesian (Bahasa Indonesia)")
+            print("  - Audio format: MP3 (cached for bandwidth efficiency)")
+            print("  - Cooldown: 2 seconds between same warning combinations")
+        else:
+            print("\nTTS Audio Warning System: DISABLED")
+            print("  Install required packages: pip install gtts pygame pydub")
+        print()
         
         save_counter = 0
         
@@ -357,6 +496,22 @@ def main():
             # Perform 3-zone danger detection with TTC calculation
             if depth_img is not None:
                 (left_status, left_dist, left_ttc), (center_status, center_dist, center_ttc), (right_status, right_dist, right_ttc) = analyze_danger_zones(depth_img)
+                
+                # Check for TTC warnings (4 seconds or under)
+                if audio_manager and audio_manager.audio_enabled:
+                    warning_zones = []
+                    
+                    # Check each zone for TTC under 4 seconds (in priority order: right, left, center)
+                    if right_ttc is not None and right_ttc <= 4.0:
+                        warning_zones.append("kanan")  # Right
+                    if left_ttc is not None and left_ttc <= 4.0:
+                        warning_zones.append("kiri")   # Left  
+                    if center_ttc is not None and center_ttc <= 4.0:
+                        warning_zones.append("tengah") # Center
+                    
+                    # Play sequential warnings if any zones have TTC <= 4 seconds
+                    if warning_zones:
+                        audio_manager.play_warning_sequence(warning_zones)
                 
                 # Format TTC display helper
                 def format_ttc(ttc):

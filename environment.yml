@@ -27,9 +27,14 @@ dependencies:
   - libtiff
   - zlib
   
+  # Audio processing dependencies
+  - pygame
+  
   # Pip dependencies for packages not available in conda on ARM64
   - pip:
     - opencv-python>=4.2.0,<5.0.0
+    - gtts>=2.4.0
+    - pydub>=0.25.1
     
 # Environment variables (optional)
 variables:
