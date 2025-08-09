@@ -13,7 +13,7 @@ dependencies:
   - numpy>=1.19,<2.0
   
   # Development Tools
-  - cmake>=3.16
+  - cmake=3.18.4
   
   # System Libraries (automatically handled by conda)
   - libgcc-ng
