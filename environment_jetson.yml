@@ -1,0 +1,29 @@
+name: nuwa_camera_streaming
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  # Core Python (compatible with Jetson Nano Ubuntu 18.04)
+  - python=3.8
+  - pip
+  - setuptools
+  - wheel
+  
+  # Minimal dependencies that work on ARM64/Jetson
+  - numpy>=1.19,<2.0
+  - cmake>=3.16
+  
+  # System libraries
+  - libgcc-ng
+  - libstdcxx-ng
+  
+  # Pip dependencies - better compatibility for Jetson Nano
+  - pip:
+    - opencv-python>=4.2.0,<5.0.0
+    - opencv-contrib-python>=4.2.0,<5.0.0
+    
+# Environment variables for Jetson
+variables:
+  # OpenCV settings for Jetson
+  OPENCV_IO_ENABLE_JASPER: "1"
+  OPENCV_IO_ENABLE_OPENEXR: "1"

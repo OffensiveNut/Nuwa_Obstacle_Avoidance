@@ -66,14 +66,27 @@ python3 python_live_client.py
 ```bash
 ./setup_environment.sh
 ```
+*Automatically detects your architecture and uses the appropriate environment file.*
 
-### Option 2: Manual Conda Setup
+### Option 2: Jetson Nano / ARM64 System Setup
+If conda fails on Jetson Nano (common issue), use system packages instead:
 ```bash
+./setup_jetson_system.sh
+```
+*This uses apt packages which are more reliable on Jetson Nano Ubuntu 18.04.*
+
+### Option 3: Manual Conda Setup
+```bash
+# For x86_64 systems
 conda env create -f environment.yml
+
+# For ARM64/Jetson systems
+conda env create -f environment_jetson.yml
+
 conda activate nuwa_camera_streaming
 ```
 
-### Option 3: pip-only Installation (Limited compatibility)
+### Option 4: pip-only Installation (Limited compatibility)
 ```bash
 python -m venv venv
 source venv/bin/activate
@@ -82,11 +95,17 @@ pip install -r requirements.txt
 
 ### Environment Details
 - **Environment Name**: `nuwa_camera_streaming`
-- **Python Version**: 3.8.15
+- **Python Version**: 3.8+
 - **Key Packages**:
-  - OpenCV 4.2.0 (Computer Vision)
-  - NumPy 1.24.4 (Numerical computing)
-  - CMake 3.18.4 (Build system)
+  - OpenCV 4.2.0+ (Computer Vision)
+  - NumPy 1.19+ (Numerical computing)
+  - CMake 3.16+ (Build system)
+
+### Jetson Nano Specific Notes
+- **Architecture**: ARM64/aarch64 detected automatically
+- **OpenCV**: Installed via apt packages for better compatibility
+- **Performance**: Optimized for embedded systems
+- **Alternative**: If conda fails, system packages provide reliable fallback
 
 ## 🎮 Usage
 
@@ -271,6 +290,39 @@ python3 python_live_client.py
 # Reset environment
 conda env remove -n nuwa_camera_streaming
 ./setup_environment.sh
+```
+
+**Jetson Nano Specific Issues**
+
+*Problem*: `PackagesNotFoundError` with opencv or other packages
+```bash
+# Solution 1: Use Jetson system setup instead
+./setup_jetson_system.sh
+
+# Solution 2: Manual system package installation
+sudo apt-get update
+sudo apt-get install python3-opencv python3-numpy cmake
+```
+
+*Problem*: Architecture detection or ARM64 compatibility
+```bash
+# Check architecture
+uname -m
+# Should show: aarch64
+
+# Use Jetson-specific environment
+conda env create -f environment_jetson.yml
+```
+
+*Problem*: Conda installation fails completely
+```bash
+# Use system Python instead (recommended for Jetson)
+sudo apt-get install python3 python3-pip python3-opencv
+pip3 install --user numpy
+
+# Then proceed with build
+./build.sh
+python3 python_live_client.py  # No conda activation needed
 ```
 
 ### Performance Optimization
